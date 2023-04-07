@@ -1,7 +1,7 @@
+
 import bpy
-from bpy.types import Operator, Panel
 from bpy.props import PointerProperty, FloatProperty, EnumProperty
-from bpy.utils import register_class, unregister_class
+from bpy.types import Operator, Panel
 
 
 bl_info = {
@@ -15,89 +15,21 @@ bl_info = {
 
 
 def populate_material_list(self, context):
-    items = []
+    material_items = []
     for material in bpy.data.materials:
         if material.use_nodes and any(node.type == 'TEX_IMAGE' for node in material.node_tree.nodes):
-            items.append((material.name, material.name, ""))
-    return items
+            material_items.append((material.name, material.name, ""))
+    return material_items
 
-
-class tMProperties(bpy.types.PropertyGroup):
-    texture_1: PointerProperty(type=bpy.types.Image, name="Texture 1")
-    texture_2: PointerProperty(type=bpy.types.Image, name="Texture 2")
-    mix_ratio: FloatProperty(name="Mix Ratio", min=0.0, max=1.0, default=0.5)
-    material_1: EnumProperty(items=populate_material_list, name="Material 1")
-    material_2: EnumProperty(items=populate_material_list, name="Material 2")
-
-
-class tMPanel(Panel):
-    bl_idname = "tM_tM_PT_panel"
-    bl_label = "tM"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'TexMix'
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        tM_props = context.scene.tM_props
-
-        # Material selectors
-        row = layout.row()
-        row.prop(tM_props, "material_1")
-        row.prop(tM_props, "material_2")
-
-        layout.separator()
-
-        # Texture selectors
-        row = layout.row()
-        row.prop(tM_props, "texture_1")
-        row.prop(tM_props, "texture_2")
-
-        layout.separator()
-
-        # Mix ratio slider
-        row = layout.row()
-        row.prop(tM_props, "mix_ratio")
-
-        layout.separator()
-
-        # Mix button
-        row = layout.row()
-        row.operator("tM_tM_OT_mix_operator", text="Mix Textures")
-
-
-class tMMixOperator(bpy.types.Operator):
+class MixOperator(bpy.types.Operator):
     """Mix two textures based on the mix ratio"""
-    bl_idname = "tM_tM_OT_mix_operator"
-    bl_label = "tM tM Mix Operator"
-
-    mix_ratio: bpy.props.FloatProperty(
-        name="Mix Ratio",
-        description="The ratio of the two textures to mix (0.0-1.0)",
-        default=0.5,
-        min=0.0,
-        max=1.0
-    )
-
-    material_1: bpy.props.EnumProperty(
-        name="Material 1",
-        items=populate_material_list
-    )
-
-    material_2: bpy.props.EnumProperty(
-        name="Material 2",
-        items=populate_material_list
-    )
-
-    @classmethod
-    def poll(cls, context):
-        return context.object is not None
+    bl_idname = "texmix.mix_operator"
+    bl_label = "Mix Operator"
 
     def execute(self, context):
         # Get the selected materials
-        material_1 = bpy.data.materials.get(self.material_1)
-        material_2 = bpy.data.materials.get(self.material_2)
+        material_1 = context.scene.texmix_props.material_1
+        material_2 = context.scene.texmix_props.material_2
 
         if not material_1 or not material_2:
             self.report({'ERROR'}, "Please select two valid materials to mix.")
@@ -120,7 +52,7 @@ class tMMixOperator(bpy.types.Operator):
         mix_node.location = (0, 0)
 
         # Set the mix ratio based on the operator property
-        mix_node.inputs[0].default_value = self.mix_ratio
+        mix_node.inputs[0].default_value = context.scene.texmix_props.mix_ratio
 
         # Connect the two textures to the mix node
         active_material.node_tree.links.new(
@@ -135,10 +67,10 @@ class tMMixOperator(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class tMMaterialSelector(bpy.types.Operator):
+class MaterialSelector(bpy.types.Operator):
     """Operator to select materials for texture mixing"""
-    bl_idname = "tM_tM_OT_material_selector"
-    bl_label = "tM tM Material Selector"
+    bl_idname = "texmix.material_selector"
+    bl_label = "Material Selector"
 
     texture_slot: bpy.props.EnumProperty(
         name="Texture Slot",
@@ -148,14 +80,20 @@ class tMMaterialSelector(bpy.types.Operator):
         ]
     )
 
+    def update_material_list(self, context):
+        materials = []
+        for material in bpy.data.materials:
+            if material.use_nodes and any(node.type == 'TEX_IMAGE' for node in material.node_tree.nodes):
+                materials.append((material.name, material.name, ""))
+        self.material_items = materials
+
+    material_items: bpy.props.CollectionProperty(type=bpy.types.PropertyGroup)
+
     material_name: bpy.props.EnumProperty(
         name="Material Name",
-        items=populate_material_list
+        items=material_items,
+        update=update_material_list
     )
-
-    @classmethod
-    def poll(cls, context):
-        return context.object is not None
 
     def execute(self, context):
         # Get the active material of the selected object
@@ -168,25 +106,92 @@ class tMMaterialSelector(bpy.types.Operator):
         selected_material = bpy.data.materials[self.material_name]
 
         # Set the texture in the selected texture slot to the texture of the selected material
-        active_material.texture_slots[texture_slot_index].texture = selected_material.texture_slots[0].texture
+        active_material.node_tree.nodes['Image Texture'].image = selected_material.node_tree.nodes['Image Texture'].image
+        active_material.texture_paint_images[texture_slot_index] = selected_material.texture_paint_images[0]
 
         return {'FINISHED'}
 
 
-def register():
-    bpy.utils.register_class(tMProperties)
-    bpy.types.Scene.tM_props = bpy.props.PointerProperty(
-        type=tMProperties)
+class Properties(bpy.types.PropertyGroup):
+    material_1: EnumProperty(
+        items=[(mat.name, mat.name, "") for mat in bpy.data.materials],
+        name="Material 1"
+    )
 
-    bpy.utils.register_class(tMPanel)
-    bpy.utils.register_class(tMMixOperator)
+    material_2: EnumProperty(
+        items=[(mat.name, mat.name, "") for mat in bpy.data.materials],
+        name="Material 2"
+    )
+
+    texture_1: PointerProperty(type=bpy.types.Image, name="Texture 1")
+    texture_2: PointerProperty(type=bpy.types.Image, name="Texture 2")
+    mix_ratio: FloatProperty(name="Mix Ratio", min=0.0, max=1.0, default=0.5)
+
+
+class Panel(bpy.types.Panel):
+    """Panel for the TexMix addon"""
+    bl_idname = "TEXMIX_PT_panel"
+    bl_label = "TexMix"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TexMix'
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.texmix_props
+
+        # Material selectors
+        row = layout.row()
+        row.prop(props, "material_1")
+        row.prop(props, "material_2")
+
+        layout.separator()
+
+        # Texture selectors
+        row = layout.row()
+        row.prop(props, "texture_1")
+        row.prop(props, "texture_2")
+
+        layout.separator()
+
+        # Mix ratio slider
+        row = layout.row()
+        row.prop(props, "mix_ratio")
+
+        layout.separator()
+
+        # Mix button
+        row = layout.row()
+        row.operator("texmix.mix_operator", text="Mix Textures")
+
+        layout.separator()
+
+        # Material selector buttons
+        row = layout.row()
+        row.operator("texmix.material_selector",
+                     text="Set Material 1").texture_slot = "0"
+        row.operator("texmix.material_selector",
+                     text="Set Material 2").texture_slot = "1"
+
+
+def register():
+    bpy.utils.register_class(Properties)
+    bpy.utils.register_class(Panel)
+    bpy.utils.register_class(MixOperator)
+    bpy.utils.register_class(MaterialSelector)
+    bpy.types.Scene.props = bpy.props.PointerProperty(
+        type=Properties)
+    bpy.types.Scene.texmix_props = bpy.props.PointerProperty(type=Properties)
+
 
 def unregister():
-    del bpy.types.Scene.tM_props
+    del bpy.types.Scene.props
 
-    bpy.utils.unregister_class(tMMixOperator)
-    bpy.utils.unregister_class(tMPanel)
-    bpy.utils.unregister_class(tMProperties)
+    bpy.utils.unregister_class(MixOperator)
+    bpy.utils.unregister_class(Panel)
+    bpy.utils.unregister_class(Properties)
+    bpy.utils.unregister_class(MaterialSelector)
+
 
 if __name__ == "__main__":
     register()
