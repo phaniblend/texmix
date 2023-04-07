@@ -35,7 +35,7 @@ class tMPanel(Panel):
     bl_label = "tM"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'tM tM'
+    bl_category = 'TexMix'
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -175,12 +175,11 @@ class tMMaterialSelector(bpy.types.Operator):
 
 def register():
     bpy.utils.register_class(tMProperties)
-    bpy.utils.register_class(tMPanel)
-    bpy.utils.register_class(tMMixOperator)
-
     bpy.types.Scene.tM_props = bpy.props.PointerProperty(
         type=tMProperties)
 
+    bpy.utils.register_class(tMPanel)
+    bpy.utils.register_class(tMMixOperator)
 
 def unregister():
     del bpy.types.Scene.tM_props
@@ -188,7 +187,6 @@ def unregister():
     bpy.utils.unregister_class(tMMixOperator)
     bpy.utils.unregister_class(tMPanel)
     bpy.utils.unregister_class(tMProperties)
-
 
 if __name__ == "__main__":
     register()
