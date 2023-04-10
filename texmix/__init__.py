@@ -1,28 +1,67 @@
-
 import bpy
 from bpy.props import PointerProperty, FloatProperty, EnumProperty
-from bpy.types import Operator, Panel
-
+from bpy.types import Operator, Panel, PropertyGroup
 
 bl_info = {
     "name": "TexMix",
     "author": "Phani",
+    "location": "N Panel",
     "version": (1, 0),
     "blender": (3, 0, 0),
-    "description": "A Blender addon for blending two textures.",
-    "category": "Textures"
+    "description": "A Blender addon for blending two materials.",
+    "category": "Material"
 }
 
+def material_items_callback(self, context):
+    materials = [(mat.name, mat.name, "") for mat in bpy.data.materials]
+    return materials
 
-def populate_material_list(self, context):
-    material_items = []
-    for material in bpy.data.materials:
-        if material.use_nodes and any(node.type == 'TEX_IMAGE' for node in material.node_tree.nodes):
-            material_items.append((material.name, material.name, ""))
-    return material_items
+def create_node_tree_from_material(material):
+    # Create a new node tree
+    node_tree = bpy.data.node_groups.new(name=material.name + "_NodeTree", type='ShaderNodeTree')
+
+    # Create a material output node
+    output_node = node_tree.nodes.new(type='ShaderNodeOutputMaterial')
+    output_node.location = (0, 0)
+
+    # Get the material's node tree
+    material_node_tree = material.node_tree
+
+    # Copy the nodes from the material's node tree to the new node tree
+    for node in material_node_tree.nodes:
+        if node.type == 'BSDF_PRINCIPLED' or node.type == 'OUTPUT_MATERIAL':
+            new_node = node_tree.nodes.new(type='ShaderNodeBsdfPrincipled')
+        else:
+            new_node = node_tree.nodes.new(type=node.type)
+        new_node.location = node.location
+        new_node.name = node.name
+
+    # Copy the node inputs and outputs
+    for input in node.inputs:
+        new_input = new_node.inputs[input.name]
+        input.copy(new_input)
+
+    for output in node.outputs:
+        new_output = new_node.outputs[output.name]
+        output.copy(new_output)
+
+    # Copy the links from the material's node tree to the new node tree
+    for link in material_node_tree.links:
+        node_tree.links.new(
+            node_tree.nodes[link.from_node.name].outputs[link.from_socket.name],
+            node_tree.nodes[link.to_node.name].inputs[link.to_socket.name]
+        )
+
+    # Connect the output node to the material's last node
+    node_tree.links.new(
+        node_tree.nodes[material_node_tree.nodes[-1].name].outputs['Shader'],
+        output_node.inputs['Surface']
+    )
+
+    return node_tree
 
 class MixOperator(bpy.types.Operator):
-    """Mix two textures based on the mix ratio"""
+    """Mix two materials based on the mix ratio"""
     bl_idname = "texmix.mix_operator"
     bl_label = "Mix Operator"
 
@@ -35,163 +74,126 @@ class MixOperator(bpy.types.Operator):
             self.report({'ERROR'}, "Please select two valid materials to mix.")
             return {'CANCELLED'}
 
-        # Get the two textures to mix
-        texture1 = material_1.node_tree.nodes.get('Image Texture')
-        texture2 = material_2.node_tree.nodes.get('Image Texture')
+        # Get the two selected materials by name
+        material_1_obj = bpy.data.materials.get(material_1)
+        material_2_obj = bpy.data.materials.get(material_2)
 
-        if not texture1 or not texture2:
-            self.report(
-                {'ERROR'}, "Please select materials with image textures to mix.")
+        if not material_1_obj or not material_2_obj:
+            self.report({'ERROR'}, "Please select two valid materials to mix.")
             return {'CANCELLED'}
 
-        # Get the active material of the selected object
-        active_material = context.object.active_material
+        # Create a new material for the mix
+        mix_material = bpy.data.materials.new(name="MixMaterial")
+        mix_material.use_nodes = True
+        mix_nodes = mix_material.node_tree.nodes
+        mix_links = mix_material.node_tree.links
 
-        # Create the mix texture node
-        mix_node = active_material.node_tree.nodes.new('ShaderNodeMixRGB')
+        # Create node trees from the selected materials
+        node_tree_1 = create_node_tree_from_material(material_1_obj)
+        node_tree_2 = create_node_tree_from_material(material_2_obj)
+
+        # Create the mix node and add it to the node tree
+        mix_node = mix_nodes.new(type='ShaderNodeMixShader')
         mix_node.location = (0, 0)
 
         # Set the mix ratio based on the operator property
         mix_node.inputs[0].default_value = context.scene.texmix_props.mix_ratio
 
-        # Connect the two textures to the mix node
-        active_material.node_tree.links.new(
-            texture1.outputs['Color'], mix_node.inputs[1])
-        active_material.node_tree.links.new(
-            texture2.outputs['Color'], mix_node.inputs[2])
+        # Connect the two materials to the mix node
+        mix_links.new(node_tree_1.outputs['Shader'], mix_node.inputs[1])
+        mix_links.new(node_tree_2.outputs['Shader'], mix_node.inputs[2])
 
         # Connect the mix node to the output node
-        active_material.node_tree.links.new(
-            mix_node.outputs['Color'], active_material.node_tree.nodes['Material Output'].inputs['Surface'])
+        mix_output_node = mix_nodes['Material Output']
+        mix_links.new(mix_node.outputs['Shader'],
+                      mix_output_node.inputs['Surface'])
+
+        # Apply the mix material to the active object
+        context.object.active_material = mix_material
 
         return {'FINISHED'}
 
-
-class MaterialSelector(bpy.types.Operator):
-    """Operator to select materials for texture mixing"""
-    bl_idname = "texmix.material_selector"
+class MaterialSelectorPanel(bpy.types.Panel):
+    bl_idname = "MATERIAL_SELECTOR_PT_texmix"
     bl_label = "Material Selector"
-
-    texture_slot: bpy.props.EnumProperty(
-        name="Texture Slot",
-        items=[
-            ("0", "Texture 1", ""),
-            ("1", "Texture 2", "")
-        ]
-    )
-
-    def update_material_list(self, context):
-        materials = []
-        for material in bpy.data.materials:
-            if material.use_nodes and any(node.type == 'TEX_IMAGE' for node in material.node_tree.nodes):
-                materials.append((material.name, material.name, ""))
-        self.material_items = materials
-
-    material_items: bpy.props.CollectionProperty(type=bpy.types.PropertyGroup)
-
-    material_name: bpy.props.EnumProperty(
-        name="Material Name",
-        items=material_items,
-        update=update_material_list
-    )
-
-    def execute(self, context):
-        # Get the active material of the selected object
-        active_material = context.object.active_material
-
-        # Get the index of the texture slot to set the texture to
-        texture_slot_index = int(self.texture_slot)
-
-        # Get the selected material by name
-        selected_material = bpy.data.materials[self.material_name]
-
-        # Set the texture in the selected texture slot to the texture of the selected material
-        active_material.node_tree.nodes['Image Texture'].image = selected_material.node_tree.nodes['Image Texture'].image
-        active_material.texture_paint_images[texture_slot_index] = selected_material.texture_paint_images[0]
-
-        return {'FINISHED'}
-
-
-class Properties(bpy.types.PropertyGroup):
-    material_1: EnumProperty(
-        items=[(mat.name, mat.name, "") for mat in bpy.data.materials],
-        name="Material 1"
-    )
-
-    material_2: EnumProperty(
-        items=[(mat.name, mat.name, "") for mat in bpy.data.materials],
-        name="Material 2"
-    )
-
-    texture_1: PointerProperty(type=bpy.types.Image, name="Texture 1")
-    texture_2: PointerProperty(type=bpy.types.Image, name="Texture 2")
-    mix_ratio: FloatProperty(name="Mix Ratio", min=0.0, max=1.0, default=0.5)
-
-
-class Panel(bpy.types.Panel):
-    """Panel for the TexMix addon"""
-    bl_idname = "TEXMIX_PT_panel"
-    bl_label = "TexMix"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'TexMix'
+    bl_context = "objectmode"
+    bl_category = "TexMix"
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.texmix_props
+        texmix_props = context.scene.texmix_props
 
         # Material selectors
-        row = layout.row()
-        row.prop(props, "material_1")
-        row.prop(props, "material_2")
-
-        layout.separator()
-
-        # Texture selectors
-        row = layout.row()
-        row.prop(props, "texture_1")
-        row.prop(props, "texture_2")
+        layout.prop(texmix_props, "material_1")
+        layout.prop(texmix_props, "material_2")
 
         layout.separator()
 
         # Mix ratio slider
-        row = layout.row()
-        row.prop(props, "mix_ratio")
+        layout.prop(texmix_props, "mix_ratio")
 
         layout.separator()
 
         # Mix button
         row = layout.row()
-        row.operator("texmix.mix_operator", text="Mix Textures")
+        row.operator("texmix.mix_operator", text="Mix Materials")
 
-        layout.separator()
-
-        # Material selector buttons
+        # Apply button
         row = layout.row()
-        row.operator("texmix.material_selector",
-                     text="Set Material 1").texture_slot = "0"
-        row.operator("texmix.material_selector",
-                     text="Set Material 2").texture_slot = "1"
+        row.operator("texmix.apply_operator", text="Apply Material")
 
+class ApplyOperator(bpy.types.Operator):
+    """Apply the mixed material to the selected object and add the material to the list of materials"""
+    bl_idname = "texmix.apply_operator"
+    bl_label = "Apply Operator"
+
+    def execute(self, context):
+        # Get the active material
+        mix_material = context.object.active_material
+
+        # Give the material a unique name
+        mix_material.name = mix_material.name + "_" + str(len(bpy.data.materials))
+
+        # Apply the mix material to the active object
+        context.object.active_material = mix_material
+
+        return {'FINISHED'}
+
+class TexMixProperties(PropertyGroup):
+    material_1: EnumProperty(
+        items=material_items_callback,
+        name="Material 1",
+        description="Select the first material to mix."
+    )
+    material_2: EnumProperty(
+        items=material_items_callback,
+        name="Material 2",
+        description="Select the second material to mix."
+    )
+    mix_ratio: FloatProperty(
+        name="Mix Ratio",
+        description="The ratio of the two materials to mix.",
+        default=0.5,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR'
+    )
 
 def register():
-    bpy.utils.register_class(Properties)
-    bpy.utils.register_class(Panel)
+    bpy.utils.register_class(TexMixProperties)
+    bpy.utils.register_class(MaterialSelectorPanel)
     bpy.utils.register_class(MixOperator)
-    bpy.utils.register_class(MaterialSelector)
-    bpy.types.Scene.props = bpy.props.PointerProperty(
-        type=Properties)
-    bpy.types.Scene.texmix_props = bpy.props.PointerProperty(type=Properties)
-
+    bpy.utils.register_class(ApplyOperator)
+    bpy.types.Scene.texmix_props = PointerProperty(type=TexMixProperties)
 
 def unregister():
-    del bpy.types.Scene.props
-
+    bpy.utils.unregister_class(ApplyOperator)
     bpy.utils.unregister_class(MixOperator)
-    bpy.utils.unregister_class(Panel)
-    bpy.utils.unregister_class(Properties)
-    bpy.utils.unregister_class(MaterialSelector)
-
+    bpy.utils.unregister_class(MaterialSelectorPanel)
+    bpy.utils.unregister_class(TexMixProperties)
+    del bpy.types.Scene.texmix_props
 
 if __name__ == "__main__":
     register()
